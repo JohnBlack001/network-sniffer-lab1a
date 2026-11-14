@@ -384,9 +384,10 @@ def main(argv=None):
             with TrafficLab(http_port=args.http_port, dns_port=args.dns_port) as lab:
                 result = lab.generate(include_ping=args.ping)
     except (OSError, RuntimeError) as error:
-        print(json.dumps({"ok": False, "error": str(error)}, ensure_ascii=False))
+        print(json.dumps({"ok": False, "error": str(error)}, ensure_ascii=True))
         return 1
-    print(json.dumps(result, ensure_ascii=False))
+    # ASCII JSON 在 Windows 的 GBK/UTF-8 管道之间也可无损解析。
+    print(json.dumps(result, ensure_ascii=True))
     return 0
 
 

@@ -9,7 +9,7 @@ if exist ".venv\Scripts\python.exe" (
 if errorlevel 1 (
     echo.
     echo Start failed. Install Python and run: python -m pip install -r requirements.txt
-    echo Live capture also requires Npcap with WinPcap API compatibility enabled.
+    echo Live capture also requires Npcap matching your Python architecture.
     pause
 )
 endlocal
