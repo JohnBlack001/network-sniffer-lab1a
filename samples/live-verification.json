@@ -1,0 +1,62 @@
+{
+  "source": "real-loopback",
+  "driver": "Npcap version 1.89, based on libpcap version 1.10.7 (64-bit time_t)",
+  "interface": "\\Device\\NPF_Loopback",
+  "bpf": "(port 57201 or port 57751 or port 57201) or icmp or icmp6",
+  "captured": 42,
+  "protocols": {
+    "TCP": 32,
+    "HTTP": 2,
+    "UDP": 2,
+    "ICMP": 3,
+    "ICMPv6": 3
+  },
+  "networks": {
+    "IPv4": 22,
+    "IPv6": 20
+  },
+  "stats": {
+    "received": 42,
+    "dropped": 0,
+    "interface_dropped": 0
+  },
+  "timestamp_abi": "passed",
+  "pcap_roundtrip": "passed",
+  "invalid_bpf_rejected": true,
+  "idle_stop_ms": 3.45,
+  "traffic": {
+    "source": "real-loopback",
+    "ipv4_http": {
+      "available": true,
+      "ok": true,
+      "status": 200,
+      "body": "Network Sniffer Lab 1A: controlled loopback HTTP traffic.\n\nThis response is generated in memory for TCP stream reassembly.\n",
+      "port": 57201
+    },
+    "ipv6_http": {
+      "available": true,
+      "ok": true,
+      "status": 200,
+      "body": "Network Sniffer Lab 1A: controlled loopback HTTP traffic.\n\nThis response is generated in memory for TCP stream reassembly.\n",
+      "port": 57201
+    },
+    "udp_dns": {
+      "available": true,
+      "ok": true,
+      "question": "lab1a.local",
+      "answer": "192.0.2.10",
+      "port": 57751
+    },
+    "ping": {
+      "requested": true,
+      "ipv4": {
+        "ok": true,
+        "returncode": 0
+      },
+      "ipv6": {
+        "ok": true,
+        "returncode": 0
+      }
+    }
+  }
+}
