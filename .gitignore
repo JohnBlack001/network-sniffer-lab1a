@@ -218,3 +218,9 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Lab verification and generated deliverables
+.test-tmp/
+output/
+.recording/
+.tools/
