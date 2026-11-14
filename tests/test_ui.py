@@ -1,12 +1,15 @@
+import gc
 import os
 import struct
+import threading
+import weakref
 from queue import Queue
 from types import SimpleNamespace
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
-from PySide6.QtCore import QObject, Signal
+from PySide6.QtCore import QCoreApplication, QEvent, QObject, QThread, Signal
 from PySide6.QtWidgets import QApplication
 
 from sniffer.ui import MainWindow
@@ -183,3 +186,92 @@ def test_saving_to_unavailable_directory_does_not_lose_packets(window, tmp_path)
     assert not window.save_capture(tmp_path / "missing" / "output.pcap")
     assert len(window.packets) == 2
     assert "保存文件错误" in window.status_label.text()
+
+
+class LifecycleWorker(QThread):
+    """Exercise actual Qt thread/signal ownership without opening a capture device."""
+
+    error = Signal(str)
+    status = Signal(str)
+    wait_for_stop = False
+
+    def __init__(self, *args, **kwargs):
+        super().__init__()
+        self.frames = Queue()
+        self.stats = {"received": 1, "dropped": 0, "interface_dropped": 0, "queue_dropped": 0}
+        self._stopped = threading.Event()
+
+    def run(self):
+        from sniffer.capture import CapturedFrame
+        self.frames.put(CapturedFrame(b"final frame", 1.0))
+        self.status.emit("生命周期测试")
+        if self.wait_for_stop:
+            self._stopped.wait(2)
+
+    def stop(self):
+        self._stopped.set()
+
+
+@pytest.mark.parametrize("finish_mode", ["natural", "wait"])
+def test_multiple_capture_threads_are_released_after_finish(window, monkeypatch, app, finish_mode):
+    import sniffer.ui as ui
+    monkeypatch.setattr(ui, "CaptureWorker", LifecycleWorker)
+    monkeypatch.setattr(LifecycleWorker, "wait_for_stop", finish_mode == "wait")
+    references = []
+    for _ in range(3):
+        assert window.start_capture()
+        worker = window._worker
+        references.append(weakref.ref(worker))
+        if finish_mode == "wait":
+            assert window._stop_and_wait()
+        else:
+            assert worker.wait(2000)
+            app.processEvents()
+            assert len(window.packets) == 1  # Keep valid final frames on a normal finish.
+        assert window._worker is None
+        del worker
+        QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+        app.processEvents()
+        gc.collect()
+    assert all(reference() is None for reference in references)
+
+
+def test_memory_limit_finish_discards_unretained_queue(window, monkeypatch, app):
+    import sniffer.ui as ui
+    from sniffer.capture import CapturedFrame
+    monkeypatch.setattr(ui, "CaptureWorker", FakeWorker)
+    monkeypatch.setattr(ui, "MAX_PACKETS", 1)
+    assert window.start_capture()
+    worker = window._worker
+    pending = worker.frames
+    for _ in range(5):
+        pending.put(CapturedFrame(b"frame", 1.0))
+    window._poll_capture()
+    assert len(window.packets) == 1
+    assert not worker.isRunning()
+    worker.finished.emit()
+    app.processEvents()
+    assert pending.empty()
+    assert len(window.packets) == 1
+    assert "上限" in window.status_label.text()
+
+
+def test_large_frame_hex_preview_is_bounded_and_original_remains_saveable(window, tmp_path):
+    from sniffer.capture import CapturedFrame
+    from sniffer.pcap_io import read_pcap, write_pcap
+    data = bytes(range(256)) * 256
+    capture = tmp_path / "large.pcap"
+    output = tmp_path / "saved.pcap"
+    write_pcap(capture, [CapturedFrame(data, 1.0, linktype=999)])
+    assert window.load_capture(capture)
+    packet = window.packets[0]
+    frame = window._frames[0]
+    window.select_packet(0)
+    preview = window.hex_view.toPlainText()
+    assert len(preview) < 100_000
+    assert "截断" in preview and "完整原始数据" in preview
+    assert "16,384" in preview and "65,536" in preview
+    assert window.packets == [packet] and window._frames == [frame]
+    assert packet.raw == data and frame.data == data
+    assert window.save_capture(output)
+    assert read_pcap(output)[0].data == data

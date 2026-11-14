@@ -5,6 +5,9 @@ from dataclasses import dataclass, field
 import psutil
 
 
+STREAM_PREVIEW_BYTES = 256 * 1024
+
+
 def _endpoint(packet, source=True):
     return (packet.src, packet.src_port) if source else (packet.dst, packet.dst_port)
 
@@ -77,7 +80,7 @@ class TCPStream:
             names = set()
             try:
                 for connection in psutil.net_connections(kind="tcp"):
-                    if not connection.laddr or connection.pid is None:
+                    if not connection.laddr or connection.pid is None or connection.pid <= 0:
                         continue
                     local = (connection.laddr[0], connection.laddr[1])
                     remote = (connection.raddr[0], connection.raddr[1]) if connection.raddr else None
@@ -113,8 +116,19 @@ class TCPStream:
             if not chunks:
                 lines.append("[该方向没有捕获到应用数据]")
             else:
+                remaining = STREAM_PREVIEW_BYTES
                 for chunk in chunks:
-                    lines.append(f"[缺失 {chunk} 字节]" if isinstance(chunk, int) else _display_bytes(chunk))
+                    if remaining == 0:
+                        break
+                    if isinstance(chunk, int):
+                        lines.append(f"[缺失 {chunk} 字节]")
+                    else:
+                        preview = chunk[:remaining]
+                        lines.append(_display_bytes(preview))
+                        remaining -= len(preview)
+                direction_size = sum(len(chunk) for chunk in chunks if isinstance(chunk, bytes))
+                if direction_size > STREAM_PREVIEW_BYTES:
+                    lines.append(f"[预览已截断：该方向显示前 {STREAM_PREVIEW_BYTES:,} / {direction_size:,} 字节；完整原始数据仍可保存为 PCAP。]")
         return "\n".join(lines)
 
 

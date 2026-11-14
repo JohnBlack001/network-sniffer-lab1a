@@ -1,5 +1,7 @@
 from types import SimpleNamespace
 
+import pytest
+
 from sniffer.streams import StreamTracker
 
 
@@ -99,3 +101,39 @@ def test_non_tcp_and_process_permission_failure_are_safe(monkeypatch):
         raise PermissionError("denied")
     monkeypatch.setattr(streams.psutil, "net_connections", denied)
     assert any("未知" in value for value in tracker.get_stream(packet).processes)
+
+
+@pytest.mark.parametrize("pid", [None, 0, -1, 123])
+def test_process_association_skips_unowned_pids_but_keeps_valid_process(monkeypatch, pid):
+    import sniffer.streams as streams
+    tracker = StreamTracker()
+    packet = tcp(100, b"data")
+    tracker.add(packet)
+    connection = SimpleNamespace(laddr=("127.0.0.1", 12345), raddr=("127.0.0.2", 80), pid=pid)
+    monkeypatch.setattr(streams.psutil, "net_connections", lambda kind: [connection])
+    monkeypatch.setattr(streams.psutil, "Process", lambda value: SimpleNamespace(name=lambda: "python"))
+    processes = tracker.get_stream(packet).processes
+    if pid is not None and pid > 0:
+        assert processes == ["python (PID 123)"]
+    else:
+        assert all("未知" in value for value in processes)
+        assert not any("PID" in value for value in processes)
+
+
+def test_large_stream_previews_each_direction_without_losing_bytes(monkeypatch):
+    import sniffer.streams as streams
+    monkeypatch.setattr(streams.psutil, "net_connections", lambda kind: [])
+    tracker = StreamTracker()
+    first = tcp(100, b"a" * (1024 * 1024))
+    second = tcp(200, b"b" * (1024 * 1024), reverse=True)
+    tracker.add(first)
+    tracker.add(second)
+    stream = tracker.get_stream(first)
+    rendered = stream.render()
+    assert len(rendered) < 530_000
+    assert rendered.count("a") == 256 * 1024
+    assert rendered.count("b") == 256 * 1024
+    assert rendered.count("预览已截断") == 2
+    assert stream.byte_count == 2 * 1024 * 1024
+    assert stream.packets == [first, second]
+    assert len(first.payload) == len(second.payload) == 1024 * 1024

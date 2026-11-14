@@ -4,7 +4,7 @@ from collections import Counter
 from datetime import datetime
 from queue import Empty
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt, QTimer, Slot
 from PySide6.QtGui import QColor, QFont
 from PySide6.QtWidgets import (
     QAbstractItemView, QCheckBox, QComboBox, QDialog,
@@ -24,6 +24,7 @@ from .streams import StreamTracker
 MAX_PACKETS = 10_000
 MAX_CAPTURE_BYTES = 64 * 1024 * 1024
 BATCH_SIZE = 200
+HEX_PREVIEW_BYTES = 16_384
 
 
 class MainWindow(QMainWindow):
@@ -306,15 +307,15 @@ class MainWindow(QMainWindow):
             worker = CaptureWorker(interface, bpf=self.bpf_edit.text().strip(),
                                    promiscuous=self.promiscuous_check.isChecked())
             self._worker = worker
-            worker.error.connect(lambda message, target=worker: self._capture_failed(target, message))
-            worker.status.connect(lambda message, target=worker: self._capture_status(target, message))
-            worker.finished.connect(lambda target=worker: self._capture_finished(target))
+            worker.error.connect(self._capture_failed)
+            worker.status.connect(self._capture_status)
+            worker.finished.connect(self._capture_finished)
             self._capture_controls(True)
             self._set_status("正在启动捕获…")
             worker.start()
             return True
         except Exception as error:
-            self._worker = None
+            self._stop_and_wait()
             self._capture_controls(False)
             self._set_status(f"捕获启动错误：{error}", True)
             return False
@@ -334,35 +335,48 @@ class MainWindow(QMainWindow):
         if not worker.wait(3000):
             self._set_status("捕获线程尚未退出，请稍后重试。", True)
             return False
+        self._release_worker(worker)
+        return True
+
+    def _release_worker(self, worker):
+        """Release a stopped worker, including frames excluded by a memory limit."""
         self._last_stats = dict(worker.stats)
-        self._worker = None
+        if worker is self._worker:
+            self._worker = None
         while True:
             try:
                 worker.frames.get_nowait()
             except Empty:
                 break
+        worker.error.disconnect(self._capture_failed)
+        worker.status.disconnect(self._capture_status)
+        worker.finished.disconnect(self._capture_finished)
+        worker.deleteLater()
         self._capture_controls(False)
-        return True
 
-    def _capture_failed(self, worker, message):
-        if worker is self._worker:
+    @Slot(str)
+    def _capture_failed(self, message):
+        worker = self.sender()
+        if worker is not None and worker is self._worker:
             self._capture_error = str(message)
             self._set_status(f"捕获错误：{message}", True)
             worker.stop()
 
-    def _capture_status(self, worker, message):
-        if worker is self._worker and not self._capture_error and not self._limit_reached:
+    @Slot(str)
+    def _capture_status(self, message):
+        worker = self.sender()
+        if worker is not None and worker is self._worker and not self._capture_error and not self._limit_reached:
             self._set_status(str(message))
 
-    def _capture_finished(self, worker):
-        if worker is not self._worker:
+    @Slot()
+    def _capture_finished(self):
+        worker = self.sender()
+        if worker is None or worker is not self._worker:
             return
         # Retain any final frames before releasing the finished worker.
         while not worker.frames.empty() and not self._limit_reached:
             self._poll_capture()
-        self._last_stats = dict(worker.stats)
-        self._worker = None
-        self._capture_controls(False)
+        self._release_worker(worker)
         self._update_statistics()
         if self._capture_error:
             self._set_status(f"捕获错误：{self._capture_error}", True)
@@ -502,11 +516,15 @@ class MainWindow(QMainWindow):
             self.detail_tree.addTopLevelItem(errors)
         self.detail_tree.expandToDepth(0)
         lines = []
-        for offset in range(0, len(packet.raw), 16):
+        preview_size = min(len(packet.raw), HEX_PREVIEW_BYTES)
+        for offset in range(0, preview_size, 16):
             chunk = packet.raw[offset:offset + 16]
             hex_bytes = " ".join(f"{byte:02x}" for byte in chunk)
             ascii_text = "".join(chr(byte) if 32 <= byte <= 126 else "." for byte in chunk)
             lines.append(f"{offset:04x}  {hex_bytes:<47}  |{ascii_text}|")
+        lines.extend(["", f"已显示 {preview_size:,} / 总计 {len(packet.raw):,} 字节。"])
+        if preview_size < len(packet.raw):
+            lines.append("[预览已截断；完整原始数据仍可保存为 PCAP。]")
         self.hex_view.setPlainText("\n".join(lines))
 
     def follow_stream(self):
