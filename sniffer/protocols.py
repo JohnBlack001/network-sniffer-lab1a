@@ -318,18 +318,31 @@ def _application(packet: Packet) -> None:
         _tls(packet, payload)
 
 
-def _dns_name(data: bytes, offset: int) -> tuple[str, int]:
+@dataclass
+class _DNSNameBudget:
+    # Shared by all owner names, questions and supported name RDATA in one message.
+    remaining: int = 16384
+
+
+def _dns_name(data: bytes, offset: int, budget: _DNSNameBudget) -> tuple[str, int]:
     labels: list[str] = []
     seen: set[int] = set()
     end: int | None = None
     expanded_length = 1
+    pointer_hops = 0
     while True:
+        if budget.remaining <= 0:
+            raise _DecodeError("DNS name decoding work limit exceeded")
+        budget.remaining -= 1
         _require(data, offset, 1, "DNS name")
         if offset in seen:
             raise _DecodeError("DNS compression pointer loop")
         seen.add(offset)
         size = data[offset]
         if size & 0xC0 == 0xC0:
+            pointer_hops += 1
+            if pointer_hops > 64:
+                raise _DecodeError("DNS compression pointer hop limit exceeded (64)")
             _require(data, offset, 2, "DNS pointer")
             pointer = ((size & 0x3F) << 8) | data[offset + 1]
             if end is None:
@@ -359,8 +372,9 @@ def _dns(packet: Packet, data: bytes) -> None:
                                    "Questions": questions, "Answers": answers, "Authority records": authorities,
                                    "Additional records": additional, "Response code": flags & 0xF}
     offset, first_name = 12, ""
+    budget = _DNSNameBudget()
     for index in range(questions):
-        name, offset = _dns_name(data, offset)
+        name, offset = _dns_name(data, offset, budget)
         _require(data, offset, 4, "DNS question")
         kind, dns_class = struct.unpack_from("!HH", data, offset)
         offset += 4
@@ -368,7 +382,7 @@ def _dns(packet: Packet, data: bytes) -> None:
             first_name = name
             values.update({"Query": name, "Query type": kind, "Query class": dns_class})
     for index in range(answers + authorities + additional):
-        name, offset = _dns_name(data, offset)
+        name, offset = _dns_name(data, offset, budget)
         _require(data, offset, 10, "DNS resource record")
         kind, dns_class, ttl, size = struct.unpack_from("!HHIH", data, offset)
         offset += 10
@@ -379,7 +393,7 @@ def _dns(packet: Packet, data: bytes) -> None:
         elif kind == 28 and size == 16:
             value = str(ipaddress.IPv6Address(data[offset:offset + size]))
         elif kind in (2, 5, 12):
-            value, name_end = _dns_name(data, offset)
+            value, name_end = _dns_name(data, offset, budget)
             if name_end > offset + size:
                 raise _DecodeError("DNS name extends beyond resource data")
         if index < 32:

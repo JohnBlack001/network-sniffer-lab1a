@@ -205,6 +205,42 @@ def test_dns_compression_loop_or_out_of_bounds_is_reported(name):
     assert packet.transport == "UDP"
 
 
+def dns_compression_chain_response(hops, repeated_records):
+    """Put a shared pointer chain in opaque RDATA, then repeatedly reference it."""
+    chain_offset = 23  # DNS header, root owner name, and first RR header.
+    chain = bytearray(b"\x00")
+    target = chain_offset
+    for _ in range(hops):
+        chain += struct.pack("!H", 0xC000 | target)
+        target = chain_offset + len(chain) - 2
+    header = struct.pack("!6H", 0x1234, 0x8180, 0, repeated_records + 1, 0, 0)
+    first = b"\x00" + struct.pack("!HHIH", 16, 1, 0, len(chain)) + chain
+    reference = struct.pack("!HHHIH", 0xC000 | target, 16, 1, 0, 0)
+    return header + first + reference * repeated_records
+
+
+def test_dns_long_compression_chain_has_a_pointer_hop_limit():
+    message = dns_compression_chain_response(3000, 3000)
+    packet = decode(ethernet(ipv4(udp(message, src=53, dst=12345), 17)))
+    assert any("pointer hop limit" in error.lower() for error in packet.errors)
+    assert packet.transport == "UDP"
+
+
+def test_dns_repeated_short_chains_share_a_message_work_limit():
+    message = dns_compression_chain_response(32, 1000)
+    packet = decode(ethernet(ipv4(udp(message, src=53, dst=12345), 17)))
+    assert any("work limit" in error.lower() for error in packet.errors)
+    assert packet.transport == "UDP"
+
+
+def test_dns_short_nested_compression_chain_remains_supported():
+    message = dns_compression_chain_response(3, 2)
+    packet = decode(ethernet(ipv4(udp(message, src=53, dst=12345), 17)))
+    assert packet.protocol == "DNS"
+    assert layer(packet, "DNS")["Answers"] == 3
+    assert not packet.errors
+
+
 def test_dns_over_tcp_uses_message_length_prefix():
     packet = decode(ethernet(ipv4(tcp(struct.pack("!H", len(DNS_QUERY)) + DNS_QUERY, dst=53))))
     assert packet.protocol == "DNS"
